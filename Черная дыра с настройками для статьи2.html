@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Моделирование гравитационного линзирования</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: sans-serif;
+            display: flex;
+            box-sizing: border-box;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+        }
+
+        /* Адаптивное положение панелей: справа на широких экранах, снизу на узких */
+        @media (orientation: landscape) {
+            body {
+                flex-direction: row;
+            }
+            .sidebar-controls {
+                flex-direction: column;
+            }
+        }
+
+        @media (orientation: portrait) {
+            body {
+                flex-direction: column;
+            }
+            .sidebar-controls {
+                flex-direction: row;
+                width: 100%;
+                justify-content: space-between;
+            }
+        }
+
+        .sidebar-controls {
+            display: flex;
+            gap: 15px;
+        }
+
+        .panel {
+            background-color: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            min-width: 210px;
+            flex: 1;
+        }
+
+        .panel h3 {
+            margin-top: 0;
+            border-bottom: 1px solid #444;
+            padding-bottom: 5px;
+            font-size: 16px;
+        }
+
+        .group {
+            margin-bottom: 15px;
+        }
+
+        .group label {
+            display: block;
+            margin: 6px 0;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        canvas {
+            background-color: #000000;
+            border: 2px solid #444;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.7);
+            max-width: 100%;
+            height: auto;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background-color: #007bc4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+
+        button:hover {
+            background-color: #0093ea;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            max-width: 1200px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ЦЕНТР: Большой холст (Консоль удалена) -->
+    <div class="container">
+        <canvas id="simCanvas" width="1200" height="1500"></canvas>
+    </div>
+
+    <!-- ОБЩИЙ БЛОК УПРАВЛЕНИЯ -->
+    <div class="sidebar-controls">
+        <!-- ПАРАМЕТРЫ СРЕДЫ -->
+        <div class="panel">
+            <h3>Параметры среды</h3>
+            <div class="group">
+                <strong>Коэффициент массы (km):</strong>
+                <label><input type="radio" name="massa" value="0.001"> 0.001</label>
+                <label><input type="radio" name="massa" value="0.01"> 0.01</label>
+                <label><input type="radio" name="massa" value="1" checked> 1.0 (Стандарт)</label>
+                <label><input type="radio" name="massa" value="10"> 10.0</label>
+            </div>
+            
+            <div class="group">
+                <strong>Скорость света (kc):</strong>
+                <label><input type="radio" name="speed" value="0.5"> 0.5x</label>
+                <label><input type="radio" name="speed" value="1" checked> 1.0x (Стандарт)</label>
+                <label><input type="radio" name="speed" value="2"> 2.0x</label>
+            </div>
+        </div>
+
+        <!-- ИСТОЧНИК СВЕТА И ЗАПУСКА -->
+        <div class="panel">
+            <h3>Источник света</h3>
+            <div class="group">
+                <strong>Положение (X / Y):</strong>
+                <label><input type="radio" name="lightPos" value="92.267471,700" checked> X: 92.26, Y: 700</label>
+                <label><input type="radio" name="lightPos" value="0,12"> X: 0, Y: 12</label>
+                <label><input type="radio" name="lightPos" value="0,-12"> X: 0, Y: -12</label>
+            </div>
+            
+            <button id="btnRun">СТАРТ / СБРОС</button>
+        </div>
+    </div>
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        let animationFrameId = null;
+
+        // Математические функции из BASIC
+        const SQR = Math.sqrt;
+        const COS = Math.cos;
+        const SIN = Math.sin;
+        const TORADIANS = (deg) => deg * Math.PI / 180;
+
+        function runSimulation() {
+            // Остановка запущенной ранее анимации перед новым стартом
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+
+            // Очистка экрана
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Считывание параметров из интерфейса
+            const km = parseFloat(document.querySelector('input[name="massa"]:checked').value);
+            const kc = parseFloat(document.querySelector('input[name="speed"]:checked').value);
+            const lightPosVal = document.querySelector('input[name="lightPos"]:checked').value.split(',');
+            const xlight = parseFloat(lightPosVal[0]);
+            const ylight = parseFloat(lightPosVal[1]);
+
+            // Параметры среды и константы моделирования
+            const w = canvas.width;
+            const h = canvas.height;
+            const star_x = 0, star_y = 0;
+            const x_min = -500, x_max = 500, y_min = -500, y_max = 500;
+            const net = 100;
+            const Massa = 2000 * km;
+            const dt = 0.1;
+            const c = 35 * kc;
+
+            // 1. Отрисовка базовой и локальной сетки (оригинальный setka)
+            for (let x = x_min; x <= x_max; x += net) {
+                for (let y = y_min; y <= y_max; y += net) {
+                    // Базовая сетка (белые точки)
+                    ctx.fillStyle = 'rgba(255, 255, 255, 1)';
+                    ctx.beginPath();
+                    ctx.arc(x + w/2, y + h/2, 2, 0, 2 * Math.PI);
+                    ctx.fill();
+
+                    // Локальная сетка (голубые точки) — строго по вашей формуле
+                    let r_grid = SQR((star_x - x)**2 + (star_y - y)**2) + 1e-16;
+                    let acce_grid = Massa / (r_grid**2 + 1e-16);
+                    let acce_x = (star_x - x) * acce_grid;
+                    let acce_y = (star_y - y) * acce_grid;
+
+                    ctx.fillStyle = 'rgba(0, 220, 220, 1)';
+                    ctx.beginPath();
+                    ctx.arc(acce_x + x + w/2, acce_y + y + h/2, 1.5, 0, 2 * Math.PI);
+                    ctx.fill();
+                }
+            }
+
+            // 2. Отрисовка начальной позиции источника света
+            ctx.fillStyle = 'rgba(255, 255, 255, 1)';
+            ctx.beginPath();
+            ctx.arc(xlight + w/2, ylight + h/2, 3, 0, 2 * Math.PI);
+            ctx.fill();
+
+            // Создание и инициализация массива лучей xycxcy
+            let xycxcy = [];
+            for (let alfa = 0; alfa <= 360; alfa++) {
+                xycxcy[alfa] = [
+                    xlight, 
+                    ylight, 
+                    COS(TORADIANS(alfa)), 
+                    SIN(TORADIANS(alfa))
+                ];
+            }
+
+            // Шкала времени/пространства (нижний индикатор)
+            ctx.strokeStyle = 'rgba(255, 255, 0, 1)';
+            ctx.strokeRect(185, 1450, 830, 10);
+
+            let n = 0;
+            let tau = 0;
+
+            // Цикл шагов симуляции
+            function simulationStep() {
+                if (n > 1000) return; // Симуляция завершена (финальный круг удален)
+
+                for (let alfa = 178; alfa <= 360; alfa++) {
+                    let x = xycxcy[alfa][0];
+                    let y = xycxcy[alfa][1];
+                    let c_x = xycxcy[alfa][2];
+                    let c_y = xycxcy[alfa][3];
+
+                    let r = SQR((star_x - x)**2 + (star_y - y)**2) + 1e-16;
+                    let acce_ = Massa / (r**2 + 1e-16); // Исправлено: строго Massa (уже учитывает km)
+                    let ktm = 1 - acce_;
+                    let acce_x = ((star_x - x) / r) * acce_;
+                    let acce_y = ((star_y - y) / r) * acce_;
+
+                    c_x = c_x + acce_x * dt;
+                    c_y = c_y + acce_y * dt;
+                    let l = SQR(c_x * c_x + c_y * c_y);
+                    c_x = c_x / l;
+                    c_y = c_y / l;
+
+                    let dx = c * c_x * dt * ktm;
+                    let dy = c * c_y * dt * ktm;
+                    x = x + dx;
+                    y = y + dy;
+
+                    // Отрисовка лучей (розовые)
+                    ctx.fillStyle = 'rgba(255, 155, 200, 0.5)';
+                    ctx.fillRect(x + w/2, y + h/2, 1, 1);
+
+                    // Специфические углы
+                    if (alfa === 263) {
+                        ctx.fillStyle = 'rgba(0, 255, 0, 1)';
+                        ctx.fillRect(x + w/2, y + h/2, 2, 2);
+                        if (n > 0) tau = tau + dt * ktm;
+                    }
+
+                    if (alfa === 276) {
+                        ctx.fillStyle = 'rgba(255, 255, 0, 1)';
+                        ctx.fillRect(x + w/2, y + h/2, 2, 2);
+                    }
+
+                    if (alfa === 277) {
+                        ctx.fillStyle = 'rgba(0, 255, 255, 1)';
+                        ctx.fillRect(x + w/2, y + h/2, 1, 1);
+                    }
+
+                    // Сохранение координат луча
+                    xycxcy[alfa][0] = x;
+                    xycxcy[alfa][1] = y;
+                    xycxcy[alfa][2] = c_x;
+                    xycxcy[alfa][3] = c_y;
+                }
+
+                // Отрисовка желтого прямоугольника прогресса
+                ctx.fillStyle = 'rgba(255, 255, 0, 1)';
+                ctx.fillRect(185 + n * 0.83, 1450, 2, 10);
+
+                n++;
+                animationFrameId = requestAnimationFrame(simulationStep);
+            }
+
+            simulationStep();
+        }
+
+        // Автоматический перезапуск при изменении переключателей
+        document.querySelectorAll('input[type="radio"]').forEach(radio => {
+            radio.addEventListener('change', runSimulation);
+        });
+
+        document.getElementById('btnRun').addEventListener('click', runSimulation);
+
+        // Стартовый запуск симуляции
+        runSimulation();
+    </script>
+</body>
+</html>
